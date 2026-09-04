@@ -1,0 +1,14 @@
+name: Sync cannelloni
+
+on:
+  schedule:
+    - cron: '27 8 * * *'
+  workflow_dispatch:
+
+jobs:
+  sync:
+    uses: tubbywrestler/aur-bin-chicken/.github/workflows/sync-and-build.yml@master
+    with:
+      aur_pkgbase: cannelloni
+    permissions:
+      contents: write
