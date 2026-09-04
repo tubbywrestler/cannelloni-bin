@@ -17,6 +17,6 @@ pkgbase = cannelloni-bin
 	source_armv7h = https://github.com/tubbywrestler/cannelloni-bin/releases/download/2.1.2-1/cannelloni-2.1.2-1-armv7h.tar.zst
 	depends_armv7h = libgcc_s.so
 	depends_armv7h = libstdc++.so
-	sha256sums_armv7h = SKIP
+	sha256sums_armv7h = 109358f62c413b9fc8f6ff227848de5bc8cc2f65e6a663f80c8fbdcd6620317a
 
 pkgname = cannelloni-bin
