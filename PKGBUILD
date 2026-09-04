@@ -14,7 +14,7 @@ conflicts=('cannelloni')
 depends=('libgcc_s.so' 'libstdc++.so' 'lksctp-tools')
 
 source=("https://github.com/tubbywrestler/cannelloni-bin/releases/download/${pkgver}-${_pkgrel_src}/cannelloni-${pkgver}-${_pkgrel_src}-x86_64.pkg.tar.zst")
-sha256sums=('SKIP')
+sha256sums=('83ada766cb104111d1732241c65da35c36f74f47cc850113c8fb456246a2109c')
 
 package() {
     bsdtar -xf "${srcdir}/cannelloni-${pkgver}-${_pkgrel_src}-x86_64.pkg.tar.zst" -C "${pkgdir}" --exclude .PKGINFO --exclude .BUILDINFO --exclude .MTREE

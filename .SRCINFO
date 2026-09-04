@@ -12,6 +12,6 @@ pkgbase = cannelloni-bin
 	conflicts = cannelloni
 	options = !debug
 	source = https://github.com/tubbywrestler/cannelloni-bin/releases/download/2.1.2-1/cannelloni-2.1.2-1-x86_64.pkg.tar.zst
-	sha256sums = SKIP
+	sha256sums = 83ada766cb104111d1732241c65da35c36f74f47cc850113c8fb456246a2109c
 
 pkgname = cannelloni-bin
