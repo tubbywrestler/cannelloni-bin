@@ -1,0 +1,205 @@
+name: Sync cannelloni (armv7h cross-build)
+
+on:
+  schedule:
+    - cron: '52 9 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      pkgver: ${{ steps.upstream.outputs.pkgver }}
+      pkgrel: ${{ steps.upstream.outputs.pkgrel }}
+      tag: ${{ steps.upstream.outputs.tag }}
+      is_new: ${{ steps.exists.outputs.is_new }}
+    steps:
+      # Same real cannelloni AUR package the x86_64 side (via aur-bin-chicken)
+      # tracks. Unlike can-utils, its source is a plain release tarball keyed
+      # by pkgver (v${pkgver} tag), not a pinned git commit.
+      - name: Read upstream cannelloni version
+        id: upstream
+        run: |
+          git clone --depth 1 https://aur.archlinux.org/cannelloni.git aur-src
+          cd aur-src
+          source PKGBUILD
+          echo "pkgver=$pkgver" >> "$GITHUB_OUTPUT"
+          echo "pkgrel=$pkgrel" >> "$GITHUB_OUTPUT"
+          # Same tag as the x86_64 side (via aur-bin-chicken) uses for this repo -
+          # one GitHub release per upstream version, with both architectures'
+          # assets attached to it (distinguished by filename, not by tag).
+          echo "tag=${pkgver}-${pkgrel}" >> "$GITHUB_OUTPUT"
+
+      - name: Check whether this version is already released
+        id: exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          artifact="cannelloni-${{ steps.upstream.outputs.pkgver }}-${{ steps.upstream.outputs.pkgrel }}-armv7h.tar.zst"
+          # The release for this tag may already exist (created by the x86_64
+          # side) without the armv7h asset yet - idempotency here is "does OUR
+          # asset exist", not "does the release exist".
+          if gh release view "${{ steps.upstream.outputs.tag }}" --repo "${{ github.repository }}" --json assets --jq '.assets[].name' 2>/dev/null | grep -qx "$artifact"; then
+            echo "is_new=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_new=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: check
+    if: needs.check.outputs.is_new == 'true'
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Bootstrap git and GitHub CLI
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm --needed git github-cli sudo cmake ninja
+
+      - name: Create unprivileged build user
+        run: |
+          # Needed before dependency resolution now, not just before the build -
+          # both the AUR helper bootstrap and makepkg itself refuse to run as root.
+          # NOPASSWD sudo is fine here only because this container is destroyed
+          # at the end of the run.
+          useradd -m builder
+          echo "builder ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/builder
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+
+      - name: Bootstrap AUR helper (yay)
+        run: |
+          su builder -c '
+            cd ~
+            git clone -q https://aur.archlinux.org/yay-bin.git
+            cd yay-bin
+            makepkg -si --noconfirm
+          '
+
+      - name: Install the arm-linux-gnueabihf-*-bin cross toolchain
+        run: |
+          # Install via AUR/yay, not GitHub releases - see can-utils-bin's own
+          # sync-armv7h.yml for the full rationale (AUR is the actual public
+          # distribution point; GitHub state can be ahead of what's committed
+          # there). Leaf-to-root order avoids yay resolving these packages'
+          # depends=() against the real, from-source arm-linux-gnueabihf-*
+          # packages instead of these -bin siblings (same fix as scalapack-bin).
+          su builder -c 'yay -S --noconfirm --needed arm-linux-gnueabihf-glibc-headers-bin'
+          su builder -c 'yay -S --noconfirm --needed arm-linux-gnueabihf-binutils-bin arm-linux-gnueabihf-glibc-bin'
+          su builder -c 'yay -S --noconfirm --needed arm-linux-gnueabihf-gcc-bin'
+          arm-linux-gnueabihf-gcc --version | head -1
+
+      - name: Checkout this repo
+        uses: actions/checkout@v7
+        with:
+          path: bin-repo
+
+      - name: Cross-compile cannelloni
+        env:
+          PKGVER: ${{ needs.check.outputs.pkgver }}
+        run: |
+          git clone --depth 1 --branch "v${PKGVER}" https://github.com/mguentner/cannelloni.git /tmp/cannelloni-src
+          cat > /tmp/arm-toolchain.cmake <<'EOF'
+          set(CMAKE_SYSTEM_NAME Linux)
+          set(CMAKE_SYSTEM_PROCESSOR arm)
+          set(CMAKE_C_COMPILER arm-linux-gnueabihf-gcc)
+          set(CMAKE_CXX_COMPILER arm-linux-gnueabihf-g++)
+          set(CMAKE_FIND_ROOT_PATH /usr/arm-none-linux-gnueabihf)
+          set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+          set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+          set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+          EOF
+          # SCTP_SUPPORT=OFF: no ARM-cross build of lksctp-tools is available.
+          # cannelloni's CMakeLists already treats this as a normal, supported
+          # config (it falls back to this automatically if SCTP isn't found) -
+          # UDP/TCP transport, the primary use case, is unaffected.
+          cmake -GNinja -DCMAKE_TOOLCHAIN_FILE=/tmp/arm-toolchain.cmake \
+            -DCMAKE_BUILD_TYPE=None -DCMAKE_INSTALL_PREFIX=/usr -DSCTP_SUPPORT=OFF \
+            -Wno-dev -B /tmp/build /tmp/cannelloni-src
+          ninja -C /tmp/build
+          DESTDIR=/tmp/instroot ninja -C /tmp/build install
+          install -Dm644 /tmp/cannelloni-src/gpl-2.0.txt /tmp/instroot/usr/share/licenses/cannelloni-bin/LICENSE
+          file /tmp/instroot/usr/bin/cannelloni | grep -q "ARM" || { echo "not an ARM binary, aborting"; exit 1; }
+
+      - name: Package as a plain tarball and compute checksum
+        id: pkg
+        env:
+          NEW_PKGVER: ${{ needs.check.outputs.pkgver }}
+          NEW_PKGREL: ${{ needs.check.outputs.pkgrel }}
+        run: |
+          artifact="cannelloni-${NEW_PKGVER}-${NEW_PKGREL}-armv7h.tar.zst"
+          tar -C /tmp/instroot --zstd -cf "$artifact" usr
+          sha=$(sha256sum "$artifact" | awk '{print $1}')
+          echo "artifact=$artifact" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          mv "$artifact" bin-repo/
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd bin-repo
+          tag="${{ needs.check.outputs.tag }}"
+          # The release for this tag may already exist (created by the x86_64
+          # side via aur-bin-chicken) - upload into it rather than failing on
+          # "already exists"; only create it fresh if this is genuinely the
+          # first asset published for this version.
+          if gh release view "$tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release upload "$tag" "${{ steps.pkg.outputs.artifact }}" --repo "${{ github.repository }}" --clobber
+          else
+            gh release create "$tag" "${{ steps.pkg.outputs.artifact }}" \
+              --repo "${{ github.repository }}" \
+              --title "$tag" \
+              --notes "Automated build of cannelloni ${{ needs.check.outputs.pkgver }}-${{ needs.check.outputs.pkgrel }}"
+          fi
+
+      - name: Bump bin package PKGBUILD (armv7h fields only)
+        env:
+          NEW_PKGVER: ${{ needs.check.outputs.pkgver }}
+          NEW_PKGREL_SRC: ${{ needs.check.outputs.pkgrel }}
+          SHA: ${{ steps.pkg.outputs.sha }}
+        run: |
+          cd bin-repo
+          sed -i "s/^pkgver=.*/pkgver=${NEW_PKGVER}/" PKGBUILD
+          sed -i "s/^_pkgrel_src=.*/_pkgrel_src=${NEW_PKGREL_SRC}/" PKGBUILD
+          sed -i -E "s/^(sha256sums_armv7h)=.*/\1=('${SHA}')/" PKGBUILD
+          chmod o+w . PKGBUILD .SRCINFO
+          su builder -c "makepkg --printsrcinfo > .SRCINFO"
+
+      - name: Commit and push bump
+        run: |
+          cd bin-repo
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add PKGBUILD .SRCINFO
+          if ! git diff --cached --quiet; then
+            git commit -m "${{ needs.check.outputs.tag }}"
+            git push
+          fi
+
+      - name: Update aur branch (flat files only, for AUR push)
+        run: |
+          cd bin-repo
+          if git ls-remote --exit-code --heads origin aur >/dev/null 2>&1; then
+            git fetch origin aur
+            git checkout -B aur origin/aur
+          else
+            git checkout --orphan aur
+            git rm -rf --cached . >/dev/null 2>&1 || true
+            git clean -fdx >/dev/null
+          fi
+          for f in PKGBUILD .SRCINFO .gitignore; do
+            git checkout master -- "$f" 2>/dev/null || true
+          done
+          git add PKGBUILD .SRCINFO .gitignore
+          if ! git diff --cached --quiet; then
+            git commit -m "${{ needs.check.outputs.tag }}"
+            git push origin aur
+          fi
+          git checkout master
