@@ -24,7 +24,7 @@ depends_armv7h=('libgcc_s.so' 'libstdc++.so')
 source_x86_64=("https://github.com/tubbywrestler/cannelloni-bin/releases/download/${pkgver}-${_pkgrel_src}/cannelloni-${pkgver}-${_pkgrel_src}-x86_64.pkg.tar.zst")
 sha256sums_x86_64=('0f05364ca1848b4a28bb86ddeabd1995f72f39447998e264eda60b2f8de313cf')
 source_armv7h=("https://github.com/tubbywrestler/cannelloni-bin/releases/download/${pkgver}-${_pkgrel_src}/cannelloni-${pkgver}-${_pkgrel_src}-armv7h.tar.zst")
-sha256sums_armv7h=('0f05364ca1848b4a28bb86ddeabd1995f72f39447998e264eda60b2f8de313cf')
+sha256sums_armv7h=('d6537d1145096f84d23694e18bcd1cc7c751f3ca88bf150bd8e6150b1f9aa423')
 
 package() {
     if [ "${CARCH}" = "armv7h" ]; then
